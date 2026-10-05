@@ -40,6 +40,10 @@ func run() error {
 		return fmt.Errorf("BPF object does not contain program allow_connect4")
 	}
 
+	if _, ok := spec.Programs["allow_connect6"]; !ok {
+		return fmt.Errorf("BPF object does not contain program allow_connect6")
+	}
+
 	collection, err := ebpf.NewCollection(spec)
 	if err != nil {
 		return fmt.Errorf("load BPF collection: %w", err)
@@ -57,7 +61,17 @@ func run() error {
 	}
 	defer attached.Close()
 
-	fmt.Println("IPv4 connection policy attached to", *cgroupPath)
+	attached6, err := link.AttachCgroup(link.CgroupOptions{
+		Path:    *cgroupPath,
+		Attach:  ebpf.AttachCGroupInet6Connect,
+		Program: collection.Programs["allow_connect6"],
+	})
+	if err != nil {
+		return fmt.Errorf("attach connect6 policy: %w", err)
+	}
+	defer attached6.Close()
+
+	fmt.Println("IPv4 and IPv6 connection policy attached to", *cgroupPath)
 	fmt.Println("press Ctrl+C to exit")
 	<-shutdown
 
