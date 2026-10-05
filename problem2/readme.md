@@ -1,5 +1,7 @@
 # Problem 2: Process TCP connection policy
 
+Shared tools and privileges are listed in the [root README](../README.md#requirements).
+
 ## Assumptions
 
 - Treat `myprocess` as a client: restrict new outbound TCP connections, not
@@ -36,27 +38,83 @@ systemd-run --user --scope --unit=ak-problem2 bash
 cat /proc/self/cgroup
 ```
 
-From `problem2/` in a normal terminal, build and run. Set `-cgroup` to
-`/sys/fs/cgroup` followed by the path printed after `0::` above; do not target
-the cgroup root or your editor's group. Example for the tested user:
+From `problem2/` in a normal terminal, build and identify the scope:
 
 ```sh
 clang -O2 -g -target bpfel -c policy.c -o policy.o
 go build -o processpolicy.bin .
-sudo ./processpolicy.bin -cgroup /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/ak-problem2.scope
+POLICY_CGROUP="/sys/fs/cgroup$(systemctl --user show ak-problem2.scope -p ControlGroup --value)"
+printf '%s\n' "$POLICY_CGROUP"
 ```
 
-Inside the test shell, go to `problem2/` and create the named TCP test client:
+The printed path must match `/sys/fs/cgroup` plus the test shell's `0::` path
+and end in `ak-problem2.scope`. Stop if it resolves to `/sys/fs/cgroup` alone;
+never attach to the host root or your editor's group.
+
+Inside the test shell, navigate to this repository's `problem2/` and create
+the named TCP client. If prompted, replace only an existing demo copy:
 
 ```sh
 cp -i "$(command -v curl)" ./myprocess
 ```
 
-With reachable test servers, `myprocess` should connect to TCP `4040` but fail
-on `4041`; ordinary curl should reach both. For IPv6 use `-6` and URLs such as
-`http://[::1]:4040/`. Outside the test cgroup, `myprocess` remains unrestricted
-by this policy. Manual IPv4/IPv6 TCP, connected UDP, scope-boundary, and cleanup
-tests passed; these are not an automated test suite.
+## Manual tests
+
+Start these servers in four separate normal terminals:
+
+```sh
+python3 -m http.server 4040 --bind 127.0.0.1
+# Another terminal:
+python3 -m http.server 4041 --bind 127.0.0.1
+# Another terminal:
+python3 -m http.server 4040 --bind ::1
+# Another terminal:
+python3 -m http.server 4041 --bind ::1
+```
+
+Before attachment, run these inside the scoped shell; all must return HTTP 200:
+
+```sh
+./myprocess -4 --noproxy '*' --connect-timeout 3 --max-time 5 -I http://127.0.0.1:4040/
+./myprocess -4 --noproxy '*' --connect-timeout 3 --max-time 5 -I http://127.0.0.1:4041/
+./myprocess -6 --noproxy '*' --connect-timeout 3 --max-time 5 -I 'http://[::1]:4040/'
+./myprocess -6 --noproxy '*' --connect-timeout 3 --max-time 5 -I 'http://[::1]:4041/'
+```
+
+In the normal loader terminal, start the policy and leave it running:
+
+```sh
+sudo ./processpolicy.bin -cgroup "$POLICY_CGROUP"
+```
+
+Repeat the four requests inside the scope: both 4040 requests should succeed;
+both 4041 requests should fail immediately, normally with curl error 7.
+Verify that a different name remains unaffected in that same shell:
+
+```sh
+curl -4 --noproxy '*' --connect-timeout 3 --max-time 5 -I http://127.0.0.1:4041/
+curl -6 --noproxy '*' --connect-timeout 3 --max-time 5 -I 'http://[::1]:4041/'
+```
+
+Both should return HTTP 200. From a normal terminal outside the test scope,
+run the two `./myprocess` 4041 requests: these should also return HTTP 200.
+Check `cat /proc/self/cgroup` to confirm this terminal is outside the scope.
+
+In another normal terminal, set `POLICY_CGROUP` to the same verified path and
+inspect the hooks:
+
+```sh
+sudo bpftool cgroup show "$POLICY_CGROUP"
+```
+
+While running, both connect4/connect6 rows should be present. Stop the loader
+with Ctrl+C: its rows should disappear and both previously denied requests
+should return HTTP 200 from the still-open scoped shell.
+
+Manual IPv4/IPv6 TCP, connected UDP, scope-boundary, and cleanup tests were
+previously reported passing; the steps above cover TCP, not the UDP tests.
+
+## Cleanup
 
 Stop the loader with Ctrl+C before exiting the test shell. Stop test servers
 as well. Keep generated `policy.o`, `processpolicy.bin`, and `myprocess` out of Git.

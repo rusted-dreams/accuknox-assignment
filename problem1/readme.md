@@ -3,6 +3,7 @@
 Drops incoming IPv4 TCP packets for a destination port using generic XDP.
 Go supplies the port through a one-entry BPF array map.
 
+Shared tools and privileges are listed in the [root README](../README.md#requirements).
 ## Scope
 
 - Default port: `4040`. Override with `-port` (`1–65535`); restart to change it.
@@ -45,6 +46,7 @@ sudo ip link set ak-peer netns ak-client
 sudo ip addr add 10.200.1.1/30 dev ak-host
 sudo ip -n ak-client addr add 10.200.1.2/30 dev ak-peer
 sudo ip link set ak-host up
+sudo ip -n ak-client link set lo up
 sudo ip -n ak-client link set ak-peer up
 ```
 
@@ -56,15 +58,34 @@ python3 -m http.server 4040 --bind 10.200.1.1
 python3 -m http.server 4041 --bind 10.200.1.1
 ```
 
-Test from the namespace; repeat with port `4041`:
+Before starting the loader, test both servers from the namespace:
 
 ```sh
-sudo ip netns exec ak-client curl --noproxy '*' --connect-timeout 3 --max-time 5 -I http://10.200.1.1:4040/
+sudo ip netns exec ak-client curl -4 --noproxy '*' --connect-timeout 3 --max-time 5 -I http://10.200.1.1:4040/
+sudo ip netns exec ak-client curl -4 --noproxy '*' --connect-timeout 3 --max-time 5 -I http://10.200.1.1:4041/
 ```
 
-Without XDP, both ports should return `200 OK`. With XDP, only the selected
-port should time out. After Ctrl+C, both should work again. Ensure the host
-firewall allows test traffic before attributing timeouts to XDP.
+Both must return HTTP 200 before continuing. If UFW is active and blocks this
+test, inspect its rules and add only the missing test exception:
+
+```sh
+sudo ufw status
+sudo ufw allow in on ak-host proto tcp from 10.200.1.2 to 10.200.1.1 port 4040,4041
+```
+
+Do not disable the firewall. Repeat the baseline after fixing reachability.
+
+In the loader terminal, run `sudo ./portfilter.bin`. Repeat both curl commands:
+4040 should time out (curl error 28), while 4041 returns HTTP 200. Check that
+non-TCP traffic still works:
+
+```sh
+sudo ip netns exec ak-client ping -c 1 -W 2 10.200.1.1
+```
+
+Press Ctrl+C in the loader terminal; 4040 should return HTTP 200 again.
+Restart with `sudo ./portfilter.bin -port 4041`: now 4040 should work and 4041
+should time out. Stop the loader and confirm 4041 recovers too.
 
 Manual tests reported passing: default/custom TCP filtering, invalid-port
 rejection, ICMP, UDP, and shutdown recovery. Parser edge cases remain untested.
@@ -72,7 +93,7 @@ rejection, ICMP, UDP, and shutdown recovery. Parser edge cases remain untested.
 ## Cleanup
 
 Stop the loader and test servers. Delete only UFW exceptions added for this
-demo (skip rules already removed):
+demo (skip rules you did not add or that are already removed):
 
 ```sh
 sudo ufw delete allow in on ak-host proto udp from 10.200.1.2 to 10.200.1.1 port 4040
