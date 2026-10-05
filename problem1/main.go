@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -23,6 +24,13 @@ func run() error {
 	shutdown := make(chan os.Signal, 1)
 	signal.Notify(shutdown, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(shutdown)
+
+	port := flag.Int("port", 4040, "TCP destination port to block")
+	flag.Parse()
+
+	if *port < 1 || *port > 65535 {
+		return fmt.Errorf("port must be between 1 and 65535")
+	}
 
 	iface, err := net.InterfaceByName("ak-host")
 	if err != nil {
@@ -52,6 +60,18 @@ func run() error {
 	defer collection.Close()
 
 	fmt.Println("bpf collection load success!")
+
+	// configure map for custom port support.
+	configMap, ok := collection.Maps["config"]
+	if !ok {
+		return fmt.Errorf("BPF object does not contain map named config")
+	}
+	key := uint32(0)
+	blockedPort := uint16(*port)
+	// Initialize the policy before packets can reach the filter.
+	if err := configMap.Update(key, blockedPort, ebpf.UpdateAny); err != nil {
+		return fmt.Errorf("set blocked port: %w", err)
+	}
 
 	// Attach the loaded program to test interface's ingress path.
 	attached, err := link.AttachXDP(link.XDPOptions{

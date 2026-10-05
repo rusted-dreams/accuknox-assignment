@@ -8,7 +8,14 @@
 #include <linux/in.h>
 #include <linux/tcp.h>
 
-#define BLOCKED_PORT 4040
+// #define BLOCKED_PORT 4040
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u16);
+} config SEC(".maps");
+
 
 // Include both the More Fragments flag and fragment offset bits.
 #define IPV4_FRAGMENT_MASK 0x3fff
@@ -65,7 +72,14 @@ int filter(struct xdp_md* ctx) {
     if ((void*)(tcp + 1) > data_end)
         return XDP_PASS;
 
-    if (bpf_ntohs(tcp->dest) == BLOCKED_PORT)
+    __u32 key = 0;
+    __u16* blocked_port = bpf_map_lookup_elem(&config, &key);
+
+    // Preserve fail-open behavior if configuration is unavailable.
+    if (!blocked_port)
+        return XDP_PASS;
+
+    if (bpf_ntohs(tcp->dest) == *blocked_port)
         return XDP_DROP;
 
     return XDP_PASS;
