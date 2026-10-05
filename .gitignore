@@ -1,2 +1,4 @@
 */filter.o
 *.bin
+myprocess
+*/policy.o
